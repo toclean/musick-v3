@@ -1,0 +1,19 @@
+{
+	"dependencies": {
+		"@discordjs/opus": "^0.8.0",
+		"@discordjs/voice": "^0.11.0",
+		"bufferutil": "^4.0.6",
+		"discord.js": "^14.1.2",
+		"dotenv": "^16.0.1",
+		"erlpack": "github:discord/erlpack",
+		"ffmpeg-static": "^5.0.2",
+		"libsodium-wrappers": "^0.7.10",
+		"play-dl": "^1.9.5",
+		"turbocommons-ts": "^3.8.0",
+		"typescript": "^4.7.4",
+		"utf-8-validate": "^5.0.9",
+		"youtube-search-without-api-key": "^1.0.7",
+		"zlib-sync": "^0.1.7"
+	},
+	"main": "./bin/index.js"
+}
