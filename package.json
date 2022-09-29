@@ -15,5 +15,19 @@
 		"youtube-search-without-api-key": "^1.0.7",
 		"zlib-sync": "^0.1.7"
 	},
-	"main": "./bin/index.js"
+	"main": "./bin/index.js",
+	"devDependencies": {
+		"@types/assert": "^1.5.6",
+		"@types/chai": "^4.3.3",
+		"@types/mocha": "^9.1.1",
+		"@types/node": "^18.7.23",
+		"chai": "^4.3.6",
+		"mocha": "^10.0.0",
+		"ts-node": "^10.9.1"
+	},
+	"scripts": {
+		"start": "nodemon --ignore test/",
+		"build": "tsc --watch",
+		"test": "mocha -w ./test/ ./ --require ts-node/register ./test/*.spec.ts"
+	}
 }
