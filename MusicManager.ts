@@ -1,17 +1,11 @@
-import { AudioPlayer, AudioPlayerStatus, createAudioResource, VoiceConnectionStatus, NoSubscriberBehavior, createAudioPlayer, getVoiceConnection } from "@discordjs/voice";
-import { CommandInteraction, User } from "discord.js";
-import * as dotenv from 'dotenv' // see https://github.com/motdotla/dotenv#how-do-i-use-dotenv-with-import
-import { search } from "youtube-search-without-api-key";
-import playdl from 'play-dl';
-import { joinVoice } from "./index";
+import { AudioPlayer, AudioPlayerStatus, createAudioPlayer, createAudioResource, DiscordGatewayAdapterCreator, entersState, getVoiceConnection, joinVoiceChannel, NoSubscriberBehavior, VoiceConnection, VoiceConnectionStatus } from '@discordjs/voice';
+import { search } from 'youtube-search-without-api-key';
+import { stream } from 'play-dl';
+import { Client, CommandInteraction, Guild, GuildMember, VoiceChannel } from 'discord.js';
 
-dotenv.config()
-
-const DEBUG = process.env.DEBUG ?? true;
-
-interface SearchResult {
+export interface Song {
     id: {
-        videoId: any;
+        videoId: string;
     };
     url: string;
     title: string;
@@ -20,14 +14,14 @@ interface SearchResult {
     snippet: {
         url: string;
         duration: any;
-        publishedAt: any;
+        publishedAt: string;
         thumbnails: {
-            id: any;
-            url: any;
-            default: any;
-            high: any;
-            height: any;
-            width: any;
+            id: string;
+            url: string;
+            default: string;
+            high: string;
+            height: number;
+            width: number;
         };
         title: string;
         views: number;
@@ -35,169 +29,216 @@ interface SearchResult {
     views: number;
 }
 
-// Move this object to its own class in the future
-export class Song implements SearchResult {
-    id: { videoId: any; };
-    url: string;
-    title: string;
-    description: string;
-    duration_raw: number;
-    snippet: { url: string; duration: any; publishedAt: any; thumbnails: { id: any; url: any; default: any; high: any; height: any; width: any; }; title: string; views: any; };
-    views: number;
-    requester: User;
-
-    constructor(searchResult: SearchResult, requester: User) {
-        this.id = searchResult.id;
-        this.url = searchResult.url;
-        this.title = searchResult.title;
-        this.description = searchResult.description;
-        this.duration_raw = searchResult.duration_raw;
-        this.snippet = searchResult.snippet;
-        this.views = searchResult.views;
-        this.requester = requester;
-    }
-
-    async play(musicManager: MusicManager, interaction: CommandInteraction) {
-        if (!interaction.guild) throw Error('Not connected to a guild!');
-
-        await joinVoice(interaction);
-
-        // Logic to play the song here
-        const stream = await playdl.stream(this.url);
-
-        let resource = createAudioResource(stream.stream, {
-            inputType: stream.type,
-            inlineVolume: true,
-        });
-
-        resource.volume?.setVolume(0.1);
-
-        musicManager.player = createAudioPlayer({
-            behaviors: {
-                noSubscriber: NoSubscriberBehavior.Play,
-            }
-        });
-
-        try {
-            musicManager.player.play(resource);
-            const vc = getVoiceConnection(interaction.guild.id);
-
-            if (!vc || vc.state.status === VoiceConnectionStatus.Destroyed || vc.state.status === VoiceConnectionStatus.Disconnected) {
-                return await interaction.editReply('SOMETHING WENT REALLY BAD...');
-            }
-
-            vc.subscribe(musicManager.player);
-
-            await interaction.editReply('Now Playing: ' + this.title);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-}
-
-export class Queue<T> extends Array<T> {
-    constructor() {
-        super();
-    }
-
-    static create<T>(): Queue<T> {
-        return Object.create(Queue.prototype);
-    }
-
-    add(songs: T[] | T): number {
-        if (Array.isArray(songs)) {
-            this.push(...songs);
-        } else {
-            this.push(songs);
-        }
-
-        return this.length;
-    }
-
-    next(): T | undefined {
-        this.shift();
-        return this.at(0);
-    }
-
-    peek(): T | undefined {
-        return this.at(0);
-    }
-}
+export type SongRequest = Song & { author: GuildMember };
 
 export class MusicManager {
-    queue: Queue<Song>;
+    queue: SongRequest[] = [];
     player: AudioPlayer | undefined;
+    guildId: string | undefined;
+    currentSongIndex: number = 0;
+    client: Client | undefined;
 
-    constructor() {
-        this.queue = Queue.create<Song>();
-        this.queue.next();
-    }
-
-    async skip(interaction: CommandInteraction) {
-        if (!this.player) throw Error('No song currently playing!');
-
-        if (this.player.state.status === AudioPlayerStatus.Playing) {
-            this.player.stop();
-        }
-
-        const nextSong = this.queue.next();
-
-        if (nextSong) {
-            return await nextSong.play(this, interaction);
+    public initialize(client: Client, guildId: string) {
+        try {
+            if (!client) throw Error('')
+    
+            this.currentSongIndex = 0;
+            this.guildId = guildId;
+            this.queue = [];
+            this.client = client;
+        } catch (e) {
+            console.error(e);
+            throw e;
         }
     }
 
-    async search(interaction: CommandInteraction) {
-        if (!interaction.guildId || interaction.guildId === '') {
-            await interaction.editReply('Not in a guild!');
-            return Promise.reject();
+    private resume() {
+        try {
+            this.player?.unpause();
+        } catch (e) {
+            console.error(e);
+            throw e;
         }
-
-        const option = interaction.options.get('query', true);
-        const { name, value: searchQuery } = option;
-
-        if (!searchQuery || typeof searchQuery !== 'string') {
-            await interaction.editReply('Invalid search query!');
-            return Promise.reject();
-        }
-
-        if (DEBUG) console.log('SEARCH QUERY: ' + searchQuery);
-
-        let searchResults = await search(searchQuery);
-        if (searchResults && searchResults.length > 5) searchResults = searchResults.slice(0, 5);
-
-        if (DEBUG) console.table(searchResults);
-
-        // const vettedResults = vetSearch(searchQuery, searchResults);
-
-        // if (DEBUG) console.table(vettedResults);
-
-        const songInQuestion = searchResults[0]; // vettedResults[0];
-
-        console.log('FOUND: ' + songInQuestion.title);
-
-        return new Song(songInQuestion, interaction.user);
     }
 
-    async play(interaction: CommandInteraction) {
-        const song = await this.search(interaction);
-
-        if (this.player?.state.status === AudioPlayerStatus.Paused) {
-            const unpauseSuccess = this.player.unpause();
-
-            if (!unpauseSuccess) throw new Error('Failed to unpause the player!');
+    private pause() {
+        try {
+            this.player?.pause();
+        } catch (e) {
+            console.error(e);
+            throw e;
         }
+    }
 
-        this.queue.add(song);
-        await interaction.editReply('Added: ' + song.title);
+    public skip() {
+        try {
+            this.player?.stop();
+        } catch (e) {
+            console.error(e);
+            throw e;
+        }
+    }
 
-        if (!this.player || this.player.state.status === AudioPlayerStatus.Idle) {
-            await song.play(this, interaction);
-            this.player?.on('stateChange', async (oldState, newState) => {
-                if (newState.status === AudioPlayerStatus.Idle) {
-                    await this.skip(interaction);
+    private async lookupSong(query: string): Promise<Song | undefined> {
+        const songResults = await search(query);
+
+        return songResults[0];
+    }
+
+    async play(command: CommandInteraction): Promise<void> {
+        try {
+            if (!this.guildId) throw Error('MusicManager is not initialized. Call initialize()');
+
+            const songToPlay = this.queue[this.currentSongIndex];
+
+            const audioStream = await stream(songToPlay.url);
+
+            let resource = createAudioResource(audioStream.stream, {
+                inputType: audioStream.type,
+                inlineVolume: true,
+            });
+            
+            resource.volume?.setVolume(0.1);
+
+            this.player = createAudioPlayer({
+                behaviors: {
+                    noSubscriber: NoSubscriberBehavior.Play,
                 }
             });
+
+            this.player.play(resource);
+
+            this.player.on('stateChange', async (oldState, newState) => {
+                if (newState.status === AudioPlayerStatus.Idle) {
+                    this.currentSongIndex += 1;
+                    if (this.currentSongIndex + 1 > this.queue.length) return;
+                    await this.play(command);
+                }
+            });
+
+            let vc = getVoiceConnection(this.guildId);
+
+            if (!vc || vc.state.status === VoiceConnectionStatus.Destroyed || vc.state.status === VoiceConnectionStatus.Disconnected) {
+                vc = await this.joinVoice(songToPlay.author.id);
+
+                if (!vc || vc.state.status === VoiceConnectionStatus.Destroyed || vc.state.status === VoiceConnectionStatus.Disconnected) {
+                    throw Error('Could not get voice connection. Good luck!');
+                }
+            }
+
+            vc.subscribe(this.player);
+            
+            await command.channel!.send('Now playing: ' + songToPlay.title);
+        } catch (e) {
+            console.error(e);
+            throw e;
         }
+    }
+
+    async joinVoice(memberId: string): Promise<VoiceConnection | undefined> {
+        try {
+            if (!this.client) throw Error('No client was provided at initialization!');
+            if (!this.guildId) throw Error('No guildId was provided at initialization!');
+
+            const guild = this.client.guilds.cache.get(this.guildId);
+            if (!guild) return;
+
+            const member = guild.members.cache.get(memberId);
+            if (!member) return;
+
+            const voiceChannel = member.voice.channel;
+            let connection: VoiceConnection;
+            if (voiceChannel as VoiceChannel) {
+                connection = joinVoiceChannel({
+                    channelId: voiceChannel?.id ?? '',
+                    guildId: guild.id,
+                    adapterCreator: guild.voiceAdapterCreator as unknown as DiscordGatewayAdapterCreator,
+                });
+
+                connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
+                    try {
+                        await Promise.race([
+                            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+                            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                        ]);
+                        // Seems to be reconnecting to a new channel - ignore disconnect
+                    } catch (error) {
+                        // Seems to be a real disconnect which SHOULDN'T be recovered from
+                        connection.destroy();
+                    }
+                });
+
+                return connection;
+            }
+        } catch (e) {
+            console.error(e);
+            throw e;
+        }
+    }
+
+    async attemptPlay(command: CommandInteraction) {
+        // Check if there is currently a song player (i.e. check if there is a player and that it is not in the idle state)
+        if (!this.player) {
+            await this.play(command);
+            return;
+        }
+
+        if (this.player.state.status === AudioPlayerStatus.Paused || this.player.state.status === AudioPlayerStatus.AutoPaused) {
+            this.resume();
+            return;
+        }
+
+        if (this.player.state.status === AudioPlayerStatus.Idle) {
+            this.player.stop();
+            await this.play(command);
+        }
+
+        if (this.player.state.status === AudioPlayerStatus.Buffering) {
+            // Should probably tell the user the player is buffering
+        }
+    }
+
+    async addSong(query: string, command: CommandInteraction): Promise<string | undefined> {
+        const song = await this.lookupSong(query);
+        if (!song) throw Error('Failed to find song using query: ' + query);
+
+        this.queue.push({
+            ...song,
+            author: command.member as GuildMember,
+        });
+
+        await this.attemptPlay(command);
+
+        return song.title;
+        // // Logic to play the song here
+        // const stream = await playdl.stream(song.url);
+
+        // let resource = createAudioResource(stream.stream, {
+        //     inputType: stream.type,
+        //     inlineVolume: true,
+        // });
+
+        // resource.volume?.setVolume(0.1);
+
+        // musicManager.player = createAudioPlayer({
+        //     behaviors: {
+        //         noSubscriber: NoSubscriberBehavior.Play,
+        //     }
+        // });
+
+        // try {
+        //     musicManager.player.play(resource);
+        //     const vc = getVoiceConnection(interaction.guild.id);
+
+        //     if (!vc || vc.state.status === VoiceConnectionStatus.Destroyed || vc.state.status === VoiceConnectionStatus.Disconnected) {
+        //         return await interaction.editReply('SOMETHING WENT REALLY BAD...');
+        //     }
+
+        //     vc.subscribe(musicManager.player);
+
+        //     await interaction.editReply('Now Playing: ' + this.title);
+        // } catch (e) {
+        //     console.error(e);
+        // }
     }
 }
